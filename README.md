@@ -17,7 +17,7 @@ A TypeScript crawler that extracts information about Swiss municipalities from W
 
 1. Install dependencies:
 ```bash
-npm install
+yarn install
 ```
 
 2. Authenticate with Google Cloud:
@@ -44,13 +44,13 @@ Make sure you have:
 
 Run the crawler in development mode:
 ```bash
-npm run dev
+yarn dev
 ```
 
 Or build and run:
 ```bash
-npm run build
-npm start
+yarn build
+yarn start
 ```
 
 The crawler will:

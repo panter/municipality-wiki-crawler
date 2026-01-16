@@ -174,6 +174,7 @@ async function generateStylizedImage(
 
       // Add municipality photo if available
       if (municipality.imagePath) {
+        console.log(`  Loading municipality photo from ${municipality.imagePath}`);
         try {
           const response = await fetch(municipality.imagePath);
           if (!response.ok) {
@@ -184,6 +185,10 @@ async function generateStylizedImage(
             // Validate that we got actual image data
             if (buffer.length === 0) {
               console.log(`  Municipality photo is empty, skipping`);
+            } else if (municipality.imagePath.toLowerCase().includes('.svg') ||
+                       buffer.length < 1000) {
+              // Skip potentially invalid images
+              console.log(`  Municipality photo may be invalid format (${buffer.length} bytes), skipping`);
             } else {
               // Determine mime type
               const mimeType = municipality.imagePath.toLowerCase().endsWith('.png')
@@ -192,21 +197,14 @@ async function generateStylizedImage(
                 ? 'image/jpeg'
                 : 'image/jpeg'; // default
 
-              // Convert to PNG if it's a potentially problematic format
-              let imageData: string;
-              if (municipality.imagePath.toLowerCase().includes('.svg') ||
-                  mimeType === 'image/jpeg' && buffer.length < 1000) {
-                // Skip potentially invalid images
-                console.log(`  Municipality photo may be invalid format, skipping`);
-              } else {
-                imageData = buffer.toString('base64');
-                contentParts.push({
-                  inlineData: {
-                    mimeType,
-                    data: imageData,
-                  },
-                });
-              }
+              const imageData = buffer.toString('base64');
+              contentParts.push({
+                inlineData: {
+                  mimeType,
+                  data: imageData,
+                },
+              });
+              console.log(`  Added municipality photo (${mimeType}, ${buffer.length} bytes)`);
             }
           }
         } catch (error) {
@@ -216,13 +214,15 @@ async function generateStylizedImage(
 
       // Add flag image if available
       if (municipality.flagPath) {
+        console.log(`  Loading flag from ${municipality.flagPath}`);
         try {
-          let flagData: string;
+          let flagData: string | undefined;
           let mimeType = 'image/png';
 
           // Check if it's an SVG that needs conversion
           if (municipality.flagPath.toLowerCase().endsWith('.svg')) {
             // Convert SVG to PNG
+            console.log(`  Converting SVG flag to PNG...`);
             const response = await fetch(municipality.flagPath);
             if (!response.ok) {
               console.log(`  Flag fetch failed (${response.status}), skipping`);
@@ -232,6 +232,7 @@ async function generateStylizedImage(
               if (svgBuffer.length === 0) {
                 console.log(`  Flag SVG is empty, skipping`);
               } else {
+                console.log(`  Converting ${svgBuffer.length} byte SVG to PNG...`);
                 // Convert using sharp
                 const pngBuffer = await sharp(svgBuffer, { density: 300 })
                   .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
@@ -247,6 +248,7 @@ async function generateStylizedImage(
                     data: flagData,
                   },
                 });
+                console.log(`  Added converted flag (PNG, ${pngBuffer.length} bytes)`);
               }
             }
           } else {

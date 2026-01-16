@@ -155,7 +155,7 @@ async function generateStylizedImage(
 
   // Add flag instruction if available
   if (municipality.flagPath) {
-    prompt += ` Include the municipality's coat of arms flag (shown in the reference image) on a flagpole or displayed on one of the buildings.`;
+    prompt += ` IMPORTANT: Include the municipality's official coat of arms flag (provided as a reference image) on a prominent flagpole. The flag design must EXACTLY match the reference coat of arms image provided - use the exact colors, symbols, and design shown. Do not modify or reinterpret the flag design.`;
   }
 
   prompt += ` The style is low-poly, smooth, vibrant, and toy-like. The name '${municipality.name}' is written in large, bold, dark-grey sans-serif text floating above the scene. Soft, bright lighting with a clean pastel background.`;
@@ -445,10 +445,14 @@ async function extractMunicipalityData(
 1. From the INFOBOX, extract:
    - The BFS number (BFS-Nr., Gemeindenummer, or similar)
    - The COAT OF ARMS/FLAG image:
+     * CRITICAL: ONLY extract if there is actually a coat of arms image in the infobox
+     * CRITICAL: Return NULL if no coat of arms/flag image exists
+     * DO NOT guess or make up a URL - only extract what is actually present
      * Look for images labeled "Wappen", "Coat of arms", "Blason"
-     * Look for filenames containing "wappen", "blason", "coat"
+     * Look for filenames containing "wappen", "blason", "coat", "COA"
      * Find the parent <a> tag of the img to get the Wikipedia File page link
      * The link usually looks like /wiki/File:... or /wiki/Datei:...
+     * Return NULL if you cannot find a coat of arms image
    - The best PHOTO/IMAGE (NOT coat of arms):
      * CRITICAL: Look for images labeled "Ansicht", "Luftbild", "Panorama", or similar - these are photos
      * CRITICAL: SKIP images labeled "Wappen", "Coat of arms", "Blason" - these are NOT photos
@@ -464,10 +468,12 @@ async function extractMunicipalityData(
    - Appearance: Brief description of how the town looks (architecture, urban/rural character, notable buildings, atmosphere) - max 100 words
    - Points of Interest: Array of notable landmarks, attractions, or places (churches, castles, museums, natural sites, etc.) - list of strings
 
+IMPORTANT: Only extract data that actually exists in the HTML. Do not guess, invent, or make up URLs.
+
 Return the data in JSON format:
 {
   "bfsId": "the BFS number as a string",
-  "flagPageUrl": "the Wikipedia File/Datei page URL for coat of arms/flag or null",
+  "flagPageUrl": "the Wikipedia File/Datei page URL for coat of arms/flag or null if not found",
   "imagePageUrl": "the Wikipedia File/Datei page URL or null if no actual photo found",
   "geography": "brief geography description or null",
   "appearance": "brief appearance description or null",

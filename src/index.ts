@@ -1,27 +1,28 @@
-import { VertexAI } from "@google-cloud/vertexai";
 import { GoogleGenAI } from "@google/genai";
 import * as cheerio from "cheerio";
 import { promises as fs } from "fs";
+import sharp from "sharp";
 
 interface Municipality {
   name: string;
   bfsId: string;
   url: string;
   image?: string;
+  flag?: string;
   stylizedImage?: string;
   geography?: string;
   appearance?: string;
   pointsOfInterest?: string[];
 }
 
+const BATCH_SIZE = 5;
+
 const WIKIPEDIA_BASE_URL = "https://de.wikipedia.org";
 const MUNICIPALITIES_LIST_URL =
   "https://de.wikipedia.org/wiki/Liste_Schweizer_Gemeinden";
 
-// Vertex AI Configuration
+// Google Cloud Configuration
 const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || "pan-lab-x";
-const GOOGLE_CLOUD_LOCATION =
-  process.env.GOOGLE_CLOUD_LOCATION || "us-central1";
 
 async function fetchHTML(url: string): Promise<string> {
   const response = await fetch(url);
@@ -59,22 +60,105 @@ async function getHighResImageUrl(filePageUrl: string): Promise<string | null> {
   }
 }
 
+async function convertSvgToPng(
+  svgUrl: string,
+  outputPath: string
+): Promise<string | null> {
+  try {
+    // Download the SVG
+    const response = await fetch(svgUrl);
+    if (!response.ok) {
+      console.error(`  Failed to download SVG from ${svgUrl}`);
+      return null;
+    }
+
+    const svgBuffer = Buffer.from(await response.arrayBuffer());
+
+    // Convert SVG to PNG with sharp
+    await sharp(svgBuffer, { density: 300 })
+      .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .png()
+      .toFile(outputPath);
+
+    console.log(`  Converted SVG to PNG: ${outputPath}`);
+    return outputPath;
+  } catch (error) {
+    console.error(`  Error converting SVG to PNG:`, error);
+    return null;
+  }
+}
+
 async function generateStylizedImage(
   municipality: {
     name: string;
     geography?: string;
     pointsOfInterest?: string[];
+    flagPath?: string;
+    imagePath?: string;
   },
   maxRetries: number = 3
 ): Promise<string | null> {
+  // Check if image already exists
+  const outputDir = "output/images";
+  const baseFileName = municipality.name.replace(/[^a-zA-Z0-9]/g, "_");
+  const pngPath = `${outputDir}/${baseFileName}_stylized.png`;
+  const jpgPath = `${outputDir}/${baseFileName}_stylized.jpg`;
+
+  try {
+    await fs.access(pngPath);
+    console.log(
+      `  Stylized image already exists: ${baseFileName}_stylized.png`
+    );
+    return pngPath;
+  } catch {
+    // PNG doesn't exist, check for JPG
+    try {
+      await fs.access(jpgPath);
+      console.log(
+        `  Stylized image already exists: ${baseFileName}_stylized.jpg`
+      );
+      return jpgPath;
+    } catch {
+      // Neither exists, continue to generate
+    }
+  }
+
   // Build the prompt with municipality details
   const geographyDesc = municipality.geography || "rolling hills and forests";
-  const landmark =
-    municipality.pointsOfInterest && municipality.pointsOfInterest.length > 0
-      ? municipality.pointsOfInterest[0]
-      : "a historic church with a tall tower";
 
-  const prompt = `A stylized 3D isometric diorama of the municipality ${municipality.name}, visualized as a cute miniature floating island on a square base. The scene features ${geographyDesc}. The central focal point is ${landmark}. Surround this with cluster of traditional Swiss houses, green trees, and winding roads. The style is low-poly, smooth, vibrant, and toy-like. The name '${municipality.name}' is written in large, bold, dark-grey sans-serif text floating above the scene. Soft, bright lighting with a clean pastel background.`;
+  // Build landmarks description
+  let landmarksDesc = "";
+  if (municipality.pointsOfInterest && municipality.pointsOfInterest.length > 0) {
+    const pois = municipality.pointsOfInterest;
+    if (pois.length === 1) {
+      landmarksDesc = `The scene prominently features ${pois[0]}.`;
+    } else if (pois.length === 2) {
+      landmarksDesc = `The scene prominently features ${pois[0]} and ${pois[1]}.`;
+    } else {
+      const lastPoi = pois[pois.length - 1];
+      const otherPois = pois.slice(0, -1).join(", ");
+      landmarksDesc = `The scene prominently features ${otherPois}, and ${lastPoi}.`;
+    }
+  } else {
+    landmarksDesc = "The scene features traditional Swiss architecture and buildings.";
+  }
+
+  // Build the prompt
+  let prompt = `A stylized 3D isometric diorama of the municipality ${municipality.name}, visualized as a cute miniature floating island on a square base.`;
+
+  // Add reference to municipality photo if available
+  if (municipality.imagePath) {
+    prompt += ` Use the reference photograph to capture the architectural style and landscape features of the real location.`;
+  }
+
+  prompt += ` The scene features ${geographyDesc}. ${landmarksDesc} Surround this with cluster of traditional Swiss houses, green trees, and winding roads.`;
+
+  // Add flag instruction if available
+  if (municipality.flagPath) {
+    prompt += ` Include the municipality's coat of arms flag (shown in the reference image) on a flagpole or displayed on one of the buildings.`;
+  }
+
+  prompt += ` The style is low-poly, smooth, vibrant, and toy-like. The name '${municipality.name}' is written in large, bold, dark-grey sans-serif text floating above the scene. Soft, bright lighting with a clean pastel background.`;
 
   // Use GoogleGenAI with Vertex AI (global region for image generation)
   const ai = new GoogleGenAI({
@@ -85,12 +169,90 @@ async function generateStylizedImage(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      // Prepare content parts
+      const contentParts: any[] = [{ text: prompt }];
+
+      // Add municipality photo if available
+      if (municipality.imagePath) {
+        try {
+          const response = await fetch(municipality.imagePath);
+          const buffer = Buffer.from(await response.arrayBuffer());
+          const imageData = buffer.toString('base64');
+
+          // Determine mime type
+          const mimeType = municipality.imagePath.toLowerCase().endsWith('.png')
+            ? 'image/png'
+            : municipality.imagePath.toLowerCase().endsWith('.jpg') || municipality.imagePath.toLowerCase().endsWith('.jpeg')
+            ? 'image/jpeg'
+            : 'image/jpeg'; // default
+
+          contentParts.push({
+            inlineData: {
+              mimeType,
+              data: imageData,
+            },
+          });
+        } catch (error) {
+          console.log(`  Could not load municipality photo, continuing without it:`, error);
+        }
+      }
+
+      // Add flag image if available
+      if (municipality.flagPath) {
+        try {
+          let flagData: string;
+          let mimeType = 'image/png';
+
+          // Check if it's an SVG that needs conversion
+          if (municipality.flagPath.toLowerCase().endsWith('.svg')) {
+            // Convert SVG to PNG
+            const response = await fetch(municipality.flagPath);
+            const svgBuffer = Buffer.from(await response.arrayBuffer());
+
+            // Convert using sharp
+            const pngBuffer = await sharp(svgBuffer, { density: 300 })
+              .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+              .png()
+              .toBuffer();
+
+            flagData = pngBuffer.toString('base64');
+            mimeType = 'image/png';
+          } else {
+            // Load image as-is
+            if (municipality.flagPath.startsWith('http')) {
+              // Download from URL
+              const response = await fetch(municipality.flagPath);
+              const buffer = Buffer.from(await response.arrayBuffer());
+              flagData = buffer.toString('base64');
+            } else {
+              // Read local file
+              const buffer = await fs.readFile(municipality.flagPath);
+              flagData = buffer.toString('base64');
+            }
+
+            // Determine mime type for non-SVG
+            mimeType = municipality.flagPath.toLowerCase().endsWith('.png')
+              ? 'image/png'
+              : 'image/jpeg';
+          }
+
+          contentParts.push({
+            inlineData: {
+              mimeType,
+              data: flagData,
+            },
+          });
+        } catch (error) {
+          console.log(`  Could not load flag image, continuing without it:`, error);
+        }
+      }
+
       const res = await ai.models.generateContent({
         model: "gemini-3-pro-image-preview",
         contents: [
           {
             role: "user",
-            parts: [{ text: prompt }],
+            parts: contentParts,
           },
         ],
         config: {
@@ -99,8 +261,8 @@ async function generateStylizedImage(
       });
 
       // Response contains parts; find the image part (inlineData)
-      const parts = res.candidates?.[0]?.content?.parts ?? [];
-      const imagePart = parts.find((p: any) => p.inlineData?.data);
+      const responseParts = res.candidates?.[0]?.content?.parts ?? [];
+      const imagePart = responseParts.find((p: any) => p.inlineData?.data);
 
       if (!imagePart || !imagePart.inlineData) {
         console.log(`  No image generated for ${municipality.name}`);
@@ -196,8 +358,7 @@ async function getMunicipalityLinks(): Promise<
 
 async function extractMunicipalityData(
   url: string,
-  name: string,
-  vertexAI: VertexAI
+  name: string
 ): Promise<Municipality | null> {
   try {
     console.log(`Processing: ${name}`);
@@ -229,15 +390,22 @@ async function extractMunicipalityData(
     });
     const articleContent = contentParagraphs.join("\n\n");
 
-    // Use Gemini via Vertex AI to extract structured data
-    const model = vertexAI.getGenerativeModel({
-      model: "gemini-2.0-flash-exp",
+    // Use GoogleGenAI with Vertex AI (global region)
+    const ai = new GoogleGenAI({
+      vertexai: true,
+      project: GOOGLE_CLOUD_PROJECT,
+      location: "global",
     });
 
     const prompt = `Extract the following information from this Wikipedia page for a Swiss municipality:
 
 1. From the INFOBOX, extract:
    - The BFS number (BFS-Nr., Gemeindenummer, or similar)
+   - The COAT OF ARMS/FLAG image:
+     * Look for images labeled "Wappen", "Coat of arms", "Blason"
+     * Look for filenames containing "wappen", "blason", "coat"
+     * Find the parent <a> tag of the img to get the Wikipedia File page link
+     * The link usually looks like /wiki/File:... or /wiki/Datei:...
    - The best PHOTO/IMAGE (NOT coat of arms):
      * CRITICAL: Look for images labeled "Ansicht", "Luftbild", "Panorama", or similar - these are photos
      * CRITICAL: SKIP images labeled "Wappen", "Coat of arms", "Blason" - these are NOT photos
@@ -256,6 +424,7 @@ async function extractMunicipalityData(
 Return the data in JSON format:
 {
   "bfsId": "the BFS number as a string",
+  "flagPageUrl": "the Wikipedia File/Datei page URL for coat of arms/flag or null",
   "imagePageUrl": "the Wikipedia File/Datei page URL or null if no actual photo found",
   "geography": "brief geography description or null",
   "appearance": "brief appearance description or null",
@@ -268,24 +437,37 @@ ${infoboxHtml}
 ARTICLE CONTENT:
 ${articleContent}`;
 
-    const result = await model.generateContent(prompt);
+    const result = await ai.models.generateContent({
+      model: "gemini-2.0-flash-exp",
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: prompt }],
+        },
+      ],
+    });
 
-    // Extract text from Vertex AI response
-    const response = result.response;
-    const candidates = response.candidates;
+    // Extract text from response
+    const candidates = result.candidates;
     if (!candidates || candidates.length === 0) {
       console.log(`  No response from AI for ${name}`);
       return null;
     }
 
-    const content = candidates[0].content;
-    const parts = content.parts;
-    if (!parts || parts.length === 0) {
+    const content = candidates[0]?.content;
+    if (!content) {
       console.log(`  No content in response for ${name}`);
       return null;
     }
 
-    const responseText = parts[0].text || "";
+    const parts = content.parts;
+    if (!parts || parts.length === 0) {
+      console.log(`  No parts in response for ${name}`);
+      return null;
+    }
+
+    const textPart = parts.find((p: any) => p.text);
+    const responseText = textPart?.text || "";
 
     // Extract JSON from the response
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -302,11 +484,18 @@ ${articleContent}`;
       imageUrl = await getHighResImageUrl(data.imagePageUrl);
     }
 
+    // Get high-resolution flag if available
+    let flagUrl: string | null = null;
+    if (data.flagPageUrl) {
+      flagUrl = await getHighResImageUrl(data.flagPageUrl);
+    }
+
     const municipality: Municipality = {
       name,
       bfsId: data.bfsId || "",
       url,
       ...(imageUrl && { image: imageUrl }),
+      ...(flagUrl && { flag: flagUrl }),
       ...(data.geography && { geography: data.geography }),
       ...(data.appearance && { appearance: data.appearance }),
       ...(data.pointsOfInterest &&
@@ -320,6 +509,8 @@ ${articleContent}`;
       name,
       geography: data.geography,
       pointsOfInterest: data.pointsOfInterest,
+      flagPath: flagUrl || undefined,
+      imagePath: imageUrl || undefined,
     });
 
     if (stylizedImagePath) {
@@ -344,13 +535,7 @@ ${articleContent}`;
 
 async function crawlMunicipalities() {
   console.log(`Using Google Cloud project: ${GOOGLE_CLOUD_PROJECT}`);
-  console.log(`Using location: ${GOOGLE_CLOUD_LOCATION}`);
-
-  // Initialize Vertex AI (uses Application Default Credentials)
-  const vertexAI = new VertexAI({
-    project: GOOGLE_CLOUD_PROJECT,
-    location: GOOGLE_CLOUD_LOCATION,
-  });
+  console.log(`Using location: global (for Gemini models)`);
 
   // Get all municipality links
   const municipalityLinks = await getMunicipalityLinks();
@@ -360,22 +545,41 @@ async function crawlMunicipalities() {
   const outputPath = `${outputDir}/municipalities.json`;
   await fs.mkdir(outputDir, { recursive: true });
 
-  // Process municipalities
-  const municipalities: Municipality[] = [];
+  // Load existing municipalities if file exists
+  let municipalities: Municipality[] = [];
+  try {
+    const existingData = await fs.readFile(outputPath, "utf-8");
+    municipalities = JSON.parse(existingData);
+    console.log(`Loaded ${municipalities.length} existing municipalities`);
+  } catch {
+    console.log("No existing data found, starting fresh");
+  }
+
+  // Create a set of already processed municipality names
+  const processedNames = new Set(municipalities.map((m) => m.name));
+
+  // Filter out already processed municipalities
+  const linksToProcess = municipalityLinks.filter(
+    ({ name }) => !processedNames.has(name)
+  );
+
+  console.log(
+    `${linksToProcess.length} municipalities to process (${processedNames.size} already done)`
+  );
 
   // Process in batches to avoid rate limits
-  const batchSize = 1;
-  for (let i = 0; i < municipalityLinks.length; i += batchSize) {
-    const batch = municipalityLinks.slice(i, i + batchSize);
+
+  for (let i = 0; i < linksToProcess.length; i += BATCH_SIZE) {
+    const batch = linksToProcess.slice(i, i + BATCH_SIZE);
 
     console.log(
-      `\nProcessing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(
-        municipalityLinks.length / batchSize
+      `\nProcessing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(
+        linksToProcess.length / BATCH_SIZE
       )}`
     );
 
     const results = await Promise.all(
-      batch.map(({ name, url }) => extractMunicipalityData(url, name, vertexAI))
+      batch.map(({ name, url }) => extractMunicipalityData(url, name))
     );
 
     municipalities.push(
@@ -387,7 +591,7 @@ async function crawlMunicipalities() {
     console.log(`  Saved ${municipalities.length} municipalities so far...`);
 
     // Wait a bit between batches to avoid rate limits
-    if (i + batchSize < municipalityLinks.length) {
+    if (i + BATCH_SIZE < linksToProcess.length) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }

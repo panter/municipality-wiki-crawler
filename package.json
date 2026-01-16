@@ -1,0 +1,30 @@
+{
+  "name": "municipality-crawler",
+  "version": "1.0.0",
+  "description": "Crawler for Swiss municipalities from Wikipedia using Gemini",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "keywords": [
+    "crawler",
+    "wikipedia",
+    "gemini",
+    "switzerland"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@google-cloud/vertexai": "^1.9.0",
+    "@google/genai": "^1.37.0",
+    "cheerio": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.2"
+  }
+}
